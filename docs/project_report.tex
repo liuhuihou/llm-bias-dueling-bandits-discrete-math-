@@ -1,0 +1,138 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{cite}
+
+\graphicspath{{../results/figures/}}
+
+\title{Bias-Aware Dueling Bandits for Robust Human Evaluation}
+\author{Anonymous Author}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Human evaluation systems mix latent quality with systematic bias from presentation order, social conformity, and selective participation. We study this problem through a dueling-bandit benchmark and propose DBS-UCB, a bias-aware optimistic algorithm that subtracts a decaying bias score from an upper-confidence preference estimate. On a 12-arm synthetic benchmark with 24 Monte Carlo runs over four bias regimes, DBS-UCB achieves the lowest final regret in every scenario, improving final regret by 7--16\% over the strongest baseline and reducing the area under the regret curve by roughly 10\% on average. Paired permutation tests show strong gains against BS-UCB in all scenarios and against RUCB under the more severe bias regimes.
+\end{abstract}
+
+\section{Introduction}
+Pairwise human judgments appear in peer review, product ratings, movie recommendations, and LLM response ranking. The challenge is not only noise, but bias: the feedback itself can systematically drift toward popularity, order, or selective participation. If a learning system treats such signals as ground truth, it can reinforce the bias that produced them.
+
+This project targets a specific and tractable slice of that problem: biased pairwise evaluation. We model ordered comparisons as a dueling-bandit process and ask whether an algorithm can remain robust when the observed comparisons are contaminated by structured human bias. Our setting is intentionally narrower than a fully general reinforcement-learning problem, because the narrower abstraction makes it possible to isolate the bias mechanisms and study them carefully.
+
+\noindent\textbf{Contributions.} We make three concrete contributions: (i) a formal preference model with position, conformity, and selective-feedback bias; (ii) DBS-UCB, an optimistic selection rule with a vanishing bias penalty; and (iii) a synthetic benchmark and analysis showing consistent gains over RUCB and BS-UCB.
+
+\section{Related Work}
+Dueling bandits formalize learning from pairwise comparisons rather than scalar rewards and were introduced in the classical work of Yue et al. \cite{yue2012k}. Zoghi et al. later proposed RUCB, an upper-confidence approach that identifies a champion arm under unbiased feedback \cite{zoghi2014relative}. Our method follows the same optimism principle, but adds an explicit correction term for biased observations.
+
+The motivation for bias calibration is also present in peer-review research. Lu and Kong showed that even weak review signals can be calibrated without a prior, which supports the broader idea that noisy human judgments should be modeled, not discarded \cite{lu2023calibrating}. For statistical validation we use paired permutation tests, following Good \cite{good2000permutation}. The project therefore sits at the intersection of preference learning, robust ranking, and human-evaluation calibration.
+
+\section{Problem Formulation}
+Let $\mathcal{A}=\{1,\dots,K\}$ be the set of candidate items. The latent preference matrix is $P\in[0,1]^{K\times K}$, where $P_{ij}=\Pr(i\succ j)$, $P_{ij}+P_{ji}=1$, and $P_{ii}=1/2$. We assume a Condorcet winner $a^\star$ exists, meaning $P_{a^\star j}>1/2$ for all $j\neq a^\star$.
+
+At round $t$, the system presents an ordered pair $(i_t,j_t)$ and observes a biased comparison
+\begin{equation}
+\tilde P_{ij,t}=\Pi_{[\epsilon,1-\epsilon]}\!\Big(P_{ij}+b_{\mathrm{pos}}+b_{\mathrm{conf}}\big(\pi_i(t)-\pi_j(t)\big)+b_{\mathrm{sel}}\,z_t\,s_{ij,t}\Big),
+\end{equation}
+where $\Pi$ clips the probability to $[\epsilon,1-\epsilon]$, $\pi_i(t)$ is a popularity proxy, $z_t\sim\mathrm{Bernoulli}(q)$ activates selective feedback on near ties, and $s_{ij,t}=\operatorname{sgn}(\pi_i(t)-\pi_j(t))\mathbf{1}\{|P_{ij}-1/2|\le \tau\}$.
+
+We evaluate strong regret. Let $\Delta_i=P_{a^\star i}-1/2$. The instantaneous regret of a duel $(i_t,j_t)$ is
+\begin{equation}
+r_t=\Delta_{i_t}+\Delta_{j_t},
+\end{equation}
+and the cumulative regret is $R_T=\sum_{t=1}^T r_t$.
+
+\section{DBS-UCB}
+DBS-UCB keeps empirical preferences $\hat P_{ij}(t)$ and confidence radii
+\begin{equation}
+r_{ij}(t)=\sqrt{\alpha\log t\,/\,n_{ij}(t)},
+\end{equation}
+where $n_{ij}(t)$ is the number of observed comparisons between $i$ and $j$. The score of arm $i$ is
+\begin{equation}
+s_i(t)=\bar p_i(t)+\bar r_i(t)-\lambda_t\hat b_i(t),
+\end{equation}
+with $\bar p_i(t)=K^{-1}\sum_j\hat P_{ij}(t)$, $\bar r_i(t)=K^{-1}\sum_j r_{ij}(t)$, and $\hat b_i(t)=|\bar p_i(t)-1/2|$ as a simple bias signature. The first arm is selected by $i_t=\arg\max_i s_i(t)$, and the second arm challenges that choice where uncertainty and closeness to the decision boundary are highest.
+
+\paragraph{Proposition 1.}
+If $\hat b_i(t)\in[0,1]$ and $\lambda_t=\lambda_0/\sqrt{t}$, then the cumulative magnitude of the bias penalty is sublinear:
+\begin{equation}
+\sum_{t=1}^T \lambda_t\hat b_i(t)\le 2\lambda_0\sqrt{T}.
+\end{equation}
+\emph{Proof sketch.} Since $\hat b_i(t)\le 1$, the claim follows from $\sum_{t=1}^T t^{-1/2}\le 2\sqrt{T}$. Hence the penalty changes early choices but vanishes asymptotically, so DBS-UCB keeps UCB-style exploration while resisting persistent bias.
+
+\section{Experimental Setup}
+We evaluate the method on a 12-arm synthetic benchmark with temperature $0.35$, base noise $0.08$, horizon $T=4000$, and 24 Monte Carlo runs per scenario. The four bias regimes are position bias $(b_{\mathrm{pos}}=0.06)$, conformity bias $(b_{\mathrm{conf}}=0.14)$, selective feedback $(b_{\mathrm{sel}}=0.24,\tau=0.10)$, and mixed bias $(0.04,0.10,0.15,\tau=0.12)$.
+
+We compare DBS-UCB with RUCB and BS-UCB. The main metrics are final regret, area under the regret curve (AUC), relative final regret, and paired permutation tests on final regret. The code exports the figures and tables used below to the \texttt{results/} directory.
+
+\section{Results and Discussion}
+The per-scenario regret curves all show the same broad pattern: DBS-UCB is not always the first method to settle, but once the uncertainty term shrinks it maintains a lower cumulative slope than both baselines. This pattern is clearest in the mixed-bias case, where presentation order, popularity pressure, and selective feedback all act together.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{regret_mixed_bias.png}
+\caption{Cumulative regret on the mixed-bias scenario. DBS-UCB tracks the same latent preference signal but accumulates regret more slowly after the early burn-in period.}
+\label{fig:mixed_curve}
+\end{figure}
+
+Figure~\ref{fig:robustness} summarizes the relative final regret, normalized to the best method in each scenario.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{robustness_comparison.png}
+\caption{Relative final regret across the four bias scenarios. DBS-UCB is the normalized reference at 1.0 in every scenario.}
+\label{fig:robustness}
+\end{figure}
+
+Table~\ref{tab:final_regret} shows mean final regret. DBS-UCB is the best method in all four scenarios, with the largest gains in position and mixed bias, where the observed feedback is most misaligned with latent quality.
+
+\begin{table}[t]
+\centering
+\caption{Mean final regret over 24 runs. Lower is better.}
+\label{tab:final_regret}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+Scenario & RUCB & BS-UCB & DBS-UCB & Gain vs best baseline \\
+\midrule
+Position bias & 717.1 & 706.7 & 597.0 & 15.5\% \\
+Conformity bias & 661.2 & 716.0 & 612.1 & 7.4\% \\
+Selective feedback & 718.4 & 742.9 & 641.2 & 10.8\% \\
+Mixed bias & 724.2 & 732.0 & 614.7 & 15.1\% \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+The paired permutation tests in Table~\ref{tab:permutation} are more nuanced. DBS-UCB is significant against BS-UCB in all four scenarios, while the comparison with RUCB is strongest when the bias mechanism actively opposes latent quality. In the conformity setting, RUCB already benefits from the popularity structure, so the additional correction from DBS-UCB improves the mean regret but does not reach the same significance level under this seed.
+
+\begin{table}[t]
+\centering
+\caption{Paired permutation tests on final regret.}
+\label{tab:permutation}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcc}
+\toprule
+Scenario & $p$(DBS-UCB vs RUCB) & $p$(DBS-UCB vs BS-UCB) \\
+\midrule
+Position bias & 0.0093 & 0.0093 \\
+Conformity bias & 0.3680 & 0.0093 \\
+Selective feedback & 0.0503 & 0.0093 \\
+Mixed bias & 0.0093 & 0.0093 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+The AUC values follow the same ordering, with DBS-UCB reducing the scenario-wise best-baseline AUC by about 10.5\% on average. This matters because it means the method is not only better at the end of training, but also accumulates less regret throughout learning.
+
+One limitation is that the benchmark is synthetic. That is intentional: the goal is to isolate bias mechanisms and verify that the method reacts to them in a controlled setting. The repository already contains a placeholder MT-Bench loader, so the natural next step is to replace the synthetic generator with real review or LLM-judge data and test whether the same bias-aware design transfers.
+
+\section{Conclusion}
+DBS-UCB is a simple bias-robust preference learner for human evaluation systems. It combines optimism with a vanishing bias penalty, preserves asymptotic exploration, and performs best in every scenario of the benchmark. The empirical results, together with the sublinear penalty bound, support the core idea that bias should be modeled explicitly instead of being absorbed into generic noise.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
