@@ -47,7 +47,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Quick debug mode: fewer runs and shorter horizon.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.horizon is not None and args.horizon <= 0:
+        parser.error("--horizon must be a positive integer.")
+    if args.runs is not None and args.runs <= 0:
+        parser.error("--runs must be a positive integer.")
+    return args
 
 
 def main() -> None:

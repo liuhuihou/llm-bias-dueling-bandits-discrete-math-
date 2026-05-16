@@ -4,22 +4,40 @@ Research-oriented framework for bias-robust dueling bandits under human evaluati
 
 ## Quick start
 
-1. Install dependencies:
+Run from the project root:
+
+1. Install dependencies once:
    - `pip install -r requirements.txt`
-2. Run full benchmark:
-   - `python -m src.main`
-3. Run quick debug benchmark:
+2. Run a quick debug benchmark:
    - `python -m src.main --quick`
-4. Optional custom scale:
+3. Run the full benchmark:
+   - `python -m src.main`
+4. Optionally choose a custom scale:
    - `python -m src.main --horizon 6000 --runs 30`
-5. Check outputs:
-   - Per-scenario regret plots: `results/figures/regret_*.png`
-   - Robustness figure: `results/figures/robustness_comparison.png`
-   - Regret table: `results/raw_data/regret_summary.csv`
-   - Robustness table: `results/raw_data/robustness_table.csv`
-   - Significance report: `results/raw_data/statistical_report.json`
-   - Report source: `docs/project_report.tex`
-   - Compiled PDF: `docs/project_report.pdf`
+
+For a fuller Chinese project guide, see `docs/README_zh.md`.
+
+## Testing
+
+Run these checks from the project root:
+
+1. Run the quick benchmark smoke test:
+   - `python -m src.main --quick`
+2. Verify CLI argument validation:
+   - `python -m src.main --horizon 0`
+   - Expected result: the command exits with an error saying `--horizon must be a positive integer.`
+
+## Outputs
+
+Benchmark runs write results under `results/`:
+
+1. Scenario regret plots: `results/figures/regret_*.png`
+2. Robustness figure: `results/figures/robustness_comparison.png`
+3. Regret table: `results/raw_data/regret_summary.csv`
+4. Robustness table: `results/raw_data/robustness_table.csv`
+5. Significance report: `results/raw_data/statistical_report.json`
+6. Report source: `docs/project_report.tex`
+7. Compiled report: `docs/project_report.pdf`
 
 ## Bias scenarios
 

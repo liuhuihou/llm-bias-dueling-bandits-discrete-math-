@@ -28,7 +28,11 @@ def final_regret(curve: np.ndarray) -> float:
 
 
 def auc_regret(curve: np.ndarray) -> float:
-    return float(np.trapezoid(curve))
+    if hasattr(np, "trapezoid"):
+        return float(np.trapezoid(curve))
+    if hasattr(np, "trapz"):
+        return float(np.trapz(curve))
+    return float(np.sum((curve[:-1] + curve[1:]) * 0.5))
 
 
 def paired_permutation_test(
