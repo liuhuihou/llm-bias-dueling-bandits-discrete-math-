@@ -61,6 +61,21 @@ If $\hat b_i(t)\in[0,1]$ and $\lambda_t=\lambda_0/\sqrt{t}$, then the cumulative
 \end{equation}
 \emph{Proof sketch.} Since $\hat b_i(t)\le 1$, the claim follows from $\sum_{t=1}^T t^{-1/2}\le 2\sqrt{T}$. Hence the penalty changes early choices but vanishes asymptotically, so DBS-UCB keeps UCB-style exploration while resisting persistent bias.
 
+\section{Practical Deployment}
+In a real evaluation platform, the algorithm does not control how a human judge internally forms an opinion. Instead, it controls the evaluation protocol around the judge. Each candidate item, such as a product, paper, movie, or LLM response, is treated as an arm. At each round the system selects two arms for comparison, optionally randomizes the display order to reduce pure position effects, records the observed winner, and updates the empirical preference matrix. The final output is not a raw average of human votes, but a debiased preference ranking derived from the learned pairwise model.
+
+This makes the theoretical terms operational. The confidence radius determines which comparisons still need evidence, so the platform spends more review budget on uncertain pairs. The bias penalty downweights unusually strong early signals that may come from order, popularity, or selective participation rather than latent quality. The decay of $\lambda_t$ is important in practice: early rounds are conservative because bias is hard to separate from quality, while later rounds rely more on accumulated evidence. Thus DBS-UCB can be deployed as a ranking layer on top of existing human feedback pipelines without requiring evaluators to change their behavior.
+
+The pairwise output can also be converted back to a familiar rating scale. After $T$ rounds, define the debiased score of item $i$ as its average estimated win probability:
+\begin{equation}
+q_i=\frac{1}{K-1}\sum_{j\neq i}\hat P_{ij}(T).
+\end{equation}
+Then $q_i$ can be mapped to a 0--100 rating by $100q_i$, or to a 1--5 star score by
+\begin{equation}
+\rho_i=1+4q_i.
+\end{equation}
+This rating is relative to the evaluated candidate set: it measures how often an item is expected to beat the others after debiasing, rather than claiming an absolute universal quality score.
+
 \section{Experimental Setup}
 We evaluate the method on a 12-arm synthetic benchmark with temperature $0.35$, base noise $0.08$, horizon $T=4000$, and 24 Monte Carlo runs per scenario. The four bias regimes are position bias $(b_{\mathrm{pos}}=0.06)$, conformity bias $(b_{\mathrm{conf}}=0.14)$, selective feedback $(b_{\mathrm{sel}}=0.24,\tau=0.10)$, and mixed bias $(0.04,0.10,0.15,\tau=0.12)$.
 
