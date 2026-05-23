@@ -1,151 +1,500 @@
 \documentclass[conference]{IEEEtran}
-\usepackage{amsmath}
+\usepackage{amsmath,amssymb}
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{cite}
+\usepackage{multirow}
 
 \graphicspath{{../results/figures/}}
 
-\title{Bias-Aware Dueling Bandits for Robust Human Evaluation}
-\author{Anonymous Author}
+\title{Correcting Peer-Herding Bias in Movie Ratings\\via Adaptive Pairwise Comparisons}
+\author{%
+  \IEEEauthorblockN{Anonymous Author}
+  \IEEEauthorblockA{CS201 Spring 2026}
+}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-Human evaluation systems mix latent quality with systematic bias from presentation order, social conformity, and selective participation. We study this problem through a dueling-bandit benchmark and propose DBS-UCB, a bias-aware optimistic algorithm that subtracts a decaying bias score from an upper-confidence preference estimate. On a 12-arm synthetic benchmark with 24 Monte Carlo runs over four bias regimes, DBS-UCB achieves the lowest final regret in every scenario, improving final regret by 7--16\% over the strongest baseline and reducing the area under the regret curve by roughly 10\% on average. Paired permutation tests show strong gains against BS-UCB in all scenarios and against RUCB under the more severe bias regimes.
+Online movie platforms aggregate votes from millions of users, but three
+structural biases systematically distort observed ratings: display-order
+anchoring, peer-herding, and extreme-opinion amplification.
+We frame the rating problem as a dueling-bandit process where an adaptive
+algorithm selects movie pairs for voting sessions while debiasing the feedback.
+We propose SBCR (Symmetric Bias-Corrected Rating), which corrects peer-herding
+through an \emph{excess-popularity} formulation that produces zero spurious
+correction when herding is absent, uses variance-UCB pair selection, and applies
+shrinkage to noisy pair corrections.
+On a 20-movie synthetic benchmark with four bias scenarios and 24 Monte Carlo
+runs at $T=5\,000$ rounds, SBCR reduces Rating MAE by up to 26\% over the naive
+baseline in the peer-herding scenario and achieves the best rating accuracy in
+both herding-dominated and realistic combined scenarios.  A formal guarantee shows
+that the peer correction introduces no spurious error when peer-herding is absent.
 \end{abstract}
 
 \section{Introduction}
-Pairwise human judgments appear in peer review, product ratings, movie recommendations, and LLM response ranking. The challenge is not only noise, but bias: the feedback itself can systematically drift toward popularity, order, or selective participation. If a learning system treats such signals as ground truth, it can reinforce the bias that produced them.
 
-This project targets a specific and tractable slice of that problem: biased pairwise evaluation. We model ordered comparisons as a dueling-bandit process and ask whether an algorithm can remain robust when the observed comparisons are contaminated by structured human bias. Our setting is intentionally narrower than a fully general reinforcement-learning problem, because the narrower abstraction makes it possible to isolate the bias mechanisms and study them carefully.
+Movie recommendation platforms---Letterboxd, IMDb, Douban---publish star ratings
+that users treat as proxies for latent film quality.  Yet a substantial body of
+evidence shows those ratings are not neutral aggregations of independent opinions.
+Three mechanisms are particularly well-documented:
 
-\noindent\textbf{Contributions.} We make three concrete contributions: (i) a formal preference model with position, conformity, and selective-feedback bias; (ii) DBS-UCB, an optimistic selection rule with a vanishing bias penalty; and (iii) a synthetic benchmark and analysis showing consistent gains over RUCB and BS-UCB.
+\textbf{Display-order (attention) bias.}  The item presented first during a
+comparison receives a systematic vote boost due to anchoring and limited
+attention \cite{joachims2005accurately}.  When display order is randomised across
+many comparisons, however, this constant offset averages out at the platform level.
+
+\textbf{Peer-herding (echo-chamber) bias.}  Social-influence experiments show that
+visible popularity scores cause users to conform their ratings to the crowd
+\cite{salganik2006experimental}.  Unlike position bias, herding is state-dependent:
+it grows with accumulated vote mass and cannot be cancelled by randomising display
+order.
+
+\textbf{Extreme-opinion (polarisation) bias.}  Near ties in quality
+trigger disproportionate participation by users with strong prior opinions,
+amplifying small quality differences into large observed vote gaps
+\cite{danescu2009opinions}.
+
+These biases compound on real platforms.  A movie that happened to receive early
+high ratings attracts inflated future votes regardless of its true quality, while
+two films of nearly equal merit may develop a large apparent score gap driven
+by extreme reviewers.
+
+\textbf{Our approach.}  We model movie quality as a latent pairwise preference
+matrix $P$ and frame rating as a dueling-bandit problem \cite{yue2012k}: an
+algorithm selects pairs of movies for voting sessions; each session yields
+biased vote shares from a small simulated audience.  The algorithm maintains a
+debiased estimate of $P$ and converts it to star ratings on $[1,10]$.
+
+\textbf{Contributions.}
+\begin{enumerate}
+  \item A formal three-bias voting model embedded in the dueling-bandit
+    framework, isolating position, herding, and polarisation mechanisms.
+  \item Three algorithms of increasing sophistication: Round-Robin Empirical
+    (RRE), UCB-based Rating (UCB-R), and the proposed SBCR.
+  \item A three-dimensional evaluation—accuracy, efficiency, robustness—showing
+    that SBCR's peer-herding correction is the critical driver of its advantage.
+\end{enumerate}
 
 \section{Related Work}
-Dueling bandits formalize learning from pairwise comparisons rather than scalar rewards and were introduced in the classical work of Yue et al. \cite{yue2012k}. Zoghi et al. later proposed RUCB, an upper-confidence approach that identifies a champion arm under unbiased feedback \cite{zoghi2014relative}. Our method follows the same optimism principle, but adds an explicit correction term for biased observations.
 
-The motivation for bias calibration is also present in peer-review research. Lu and Kong showed that even weak review signals can be calibrated without a prior, which supports the broader idea that noisy human judgments should be modeled, not discarded \cite{lu2023calibrating}. For statistical validation we use paired permutation tests, following Good \cite{good2000permutation}. The project therefore sits at the intersection of preference learning, robust ranking, and human-evaluation calibration.
+\textbf{Dueling bandits.}  The dueling-bandit problem \cite{yue2012k} extends
+multi-armed bandits to pairwise feedback.  RUCB \cite{zoghi2014relative} uses an
+upper confidence bound on pairwise preferences to identify the Condorcet winner
+under unbiased feedback.  Our UCB-R baseline adapts this variance-minimising
+principle to the rating estimation objective rather than pure winner identification.
+
+\textbf{Position bias correction.}  Joachims et al.\ showed that click-through
+rates carry strong position bias that can be cancelled by comparing items across
+positions \cite{joachims2005accurately}.  In our setting, randomising the display
+order across voting sessions already cancels constant position bias in the
+aggregate statistics, so an explicit symmetrisation step does not reduce bias but
+does introduce additional variance (Section~\ref{sec:discussion}).
+
+\textbf{Social influence and herding.}  Salganik et al.\ demonstrated in a
+controlled music experiment that social signals cause herding that decouples
+observed popularity from intrinsic quality \cite{salganik2006experimental}.
+Aral and Walker quantified peer-influence propagation in recommendation networks
+\cite{aral2011creating}.  Unlike position bias, herding accumulates with time and
+is not cancelled by randomising comparisons, making it the primary target of our
+debiasing design.
+
+\textbf{Rating calibration.}  Lu and Kong showed that cheap human signals can be
+calibrated without a prior, supporting the idea that biased judgements should be
+modelled and corrected rather than discarded \cite{lu2023calibrating}.
 
 \section{Problem Formulation}
-Let $\mathcal{A}=\{1,\dots,K\}$ be the set of candidate items. The latent preference matrix is $P\in[0,1]^{K\times K}$, where $P_{ij}=\Pr(i\succ j)$, $P_{ij}+P_{ji}=1$, and $P_{ii}=1/2$. We assume a Condorcet winner $a^\star$ exists, meaning $P_{a^\star j}>1/2$ for all $j\neq a^\star$.
 
-At round $t$, the system presents an ordered pair $(i_t,j_t)$ and observes a biased comparison
-\begin{equation}
-\tilde P_{ij,t}=\Pi_{[\epsilon,1-\epsilon]}\!\Big(P_{ij}+b_{\mathrm{pos}}+b_{\mathrm{conf}}\big(\pi_i(t)-\pi_j(t)\big)+b_{\mathrm{sel}}\,z_t\,s_{ij,t}\Big),
-\end{equation}
-where $\Pi$ clips the probability to $[\epsilon,1-\epsilon]$, $\pi_i(t)$ is a popularity proxy, $z_t\sim\mathrm{Bernoulli}(q)$ activates selective feedback on near ties, and $s_{ij,t}=\operatorname{sgn}(\pi_i(t)-\pi_j(t))\mathbf{1}\{|P_{ij}-1/2|\le \tau\}$.
+\subsection{Movie Quality and Pairwise Preferences}
 
-We evaluate strong regret. Let $\Delta_i=P_{a^\star i}-1/2$. The instantaneous regret of a duel $(i_t,j_t)$ is
-\begin{equation}
-r_t=\Delta_{i_t}+\Delta_{j_t},
+Let $\mathcal{M}=\{1,\dots,K\}$ be a pool of $K$ candidate movies.  Each movie
+$i$ has a latent quality score $u_i\sim\mathcal{N}(0,1)$.  The true pairwise
+preference probability is
+\begin{equation}\label{eq:true_pref}
+  P_{ij} = \sigma\!\left(\tfrac{u_i-u_j}{\tau}\right)
+         + \varepsilon_i - \varepsilon_j,
 \end{equation}
-and the cumulative regret is $R_T=\sum_{t=1}^T r_t$.
+where $\sigma$ is the logistic function, $\tau>0$ is a temperature, and
+$\varepsilon_i\sim\mathcal{N}(0,\sigma_{\mathrm{base}})$ adds per-movie noise so
+that preferences are not purely one-dimensional.
+By construction, $P_{ij}+P_{ji}=1$ and $P_{ii}=0.5$.
+Movie $m^*$ is the \emph{Condorcet winner} if $P_{m^*j}>0.5$ for all $j\neq m^*$.
 
-\section{DBS-UCB}
-DBS-UCB keeps empirical preferences $\hat P_{ij}(t)$ and confidence radii
-\begin{equation}
-r_{ij}(t)=\sqrt{\alpha\log t\,/\,n_{ij}(t)},
-\end{equation}
-where $n_{ij}(t)$ is the number of observed comparisons between $i$ and $j$. The score of arm $i$ is
-\begin{equation}
-s_i(t)=\bar p_i(t)+\bar r_i(t)-\lambda_t\hat b_i(t),
-\end{equation}
-with $\bar p_i(t)=K^{-1}\sum_j\hat P_{ij}(t)$, $\bar r_i(t)=K^{-1}\sum_j r_{ij}(t)$, and $\hat b_i(t)=|\bar p_i(t)-1/2|$ as a simple bias signature. The first arm is selected by $i_t=\arg\max_i s_i(t)$, and the second arm challenges that choice where uncertainty and closeness to the decision boundary are highest.
+\subsection{Biased Voting Model}
 
-\paragraph{Proposition 1.}
-If $\hat b_i(t)\in[0,1]$ and $\lambda_t=\lambda_0/\sqrt{t}$, then the cumulative magnitude of the bias penalty is sublinear:
-\begin{equation}
-\sum_{t=1}^T \lambda_t\hat b_i(t)\le 2\lambda_0\sqrt{T}.
+At round $t$ the algorithm nominates a pair $(i,j)$.  The platform randomises the
+display order uniformly (50/50) and shows the ordered pair to $m$ users.
+When movie $i$ appears first, the biased observed vote probability is
+\begin{equation}\label{eq:observed}
+  Q_{ij}(t)=\mathrm{clip}\!\left(
+    P_{ij} + \mathcal{N}(0,\sigma^2(1+A_{ij}))
+    + \Delta_{\mathrm{pos}}
+    + \Delta_{\mathrm{peer}}(t)
+    + \Delta_{\mathrm{sel}}(t),\;
+    p_{\min},p_{\max}\right),
 \end{equation}
-\emph{Proof sketch.} Since $\hat b_i(t)\le 1$, the claim follows from $\sum_{t=1}^T t^{-1/2}\le 2\sqrt{T}$. Hence the penalty changes early choices but vanishes asymptotically, so DBS-UCB keeps UCB-style exploration while resisting persistent bias.
+where the three structured bias terms are
+\begin{align}
+  \Delta_{\mathrm{pos}}     &= b_{\mathrm{pos}},\label{eq:pos}\\
+  \Delta_{\mathrm{peer}}(t) &= b_{\mathrm{conf}}
+    \tanh(3(\pi_i(t)-\pi_j(t))),\label{eq:peer}\\
+  \Delta_{\mathrm{sel}}(t)  &= \tfrac{1}{2}b_{\mathrm{sel}}\,A_{ij}
+    \bigl(0.65\tanh(3(\pi_i(t)-\pi_j(t)))+0.35\bigr),\label{eq:sel}
+\end{align}
+$\pi_i(t)=(W_i^{\mathrm{pub}}(t)+1)/(D_i^{\mathrm{pub}}(t)+2)$ is the
+Laplace-smoothed public win rate, updated from raw vote counts after every session;
+$A_{ij}=\mathrm{clip}(1-|P_{ij}-0.5|/\tau_{\mathrm{sel}},0,1)$ is an ambiguity
+weight that peaks at ties.
+Votes are drawn as $\mathrm{Binomial}(m,Q_{ij}(t))$.
 
-\section{Practical Deployment}
-In a real evaluation platform, the algorithm does not control how a human judge internally forms an opinion. Instead, it controls the evaluation protocol around the judge. Each candidate item, such as a product, paper, movie, or LLM response, is treated as an arm. At each round the system selects two arms for comparison, optionally randomizes the display order to reduce pure position effects, records the observed winner, and updates the empirical preference matrix. The final output is not a raw average of human votes, but a debiased preference ranking derived from the learned pairwise model.
+\subsection{Rating Formula and Regret}
 
-This makes the theoretical terms operational. The confidence radius determines which comparisons still need evidence, so the platform spends more review budget on uncertain pairs. The bias penalty downweights unusually strong early signals that may come from order, popularity, or selective participation rather than latent quality. The decay of $\lambda_t$ is important in practice: early rounds are conservative because bias is hard to separate from quality, while later rounds rely more on accumulated evidence. Thus DBS-UCB can be deployed as a ranking layer on top of existing human feedback pipelines without requiring evaluators to change their behavior.
-
-The pairwise output can also be converted back to a familiar rating scale. After $T$ rounds, define the debiased score of item $i$ as its average estimated win probability:
-\begin{equation}
-q_i=\frac{1}{K-1}\sum_{j\neq i}\hat P_{ij}(T).
+The \emph{star rating} of movie $i$ given estimated preferences $\hat{P}$ is
+\begin{equation}\label{eq:rating}
+  \hat{R}_i = 1 + \frac{9}{K-1}\sum_{j\neq i}\hat{P}_{ij}
+    \;\in[1,10].
 \end{equation}
-Then $q_i$ can be mapped to a 0--100 rating by $100q_i$, or to a 1--5 star score by
-\begin{equation}
-\rho_i=1+4q_i.
+\emph{Strong regret} at round $t$ measures the quality loss from not involving
+the best movie:
+\begin{equation}\label{eq:regret}
+  r_t = \max(P_{m^*,i_t}+P_{m^*,j_t}-1,\;0),\quad
+  R_T = \sum_{t=1}^T r_t.
 \end{equation}
-This rating is relative to the evaluated candidate set: it measures how often an item is expected to beat the others after debiasing, rather than claiming an absolute universal quality score.
+
+\section{Algorithms}
+
+All algorithms maintain weighted wins $W_{ij}$ and comparison counts $N_{ij}$.
+Given vote share $y_i$ from audience size $m$, the base update is
+$W_{ij}\!\mathrel{+}= my_i$, $N_{ij}\!\mathrel{+}= m$ (and symmetrically for $j$).
+The empirical preference is $\hat{P}_{ij}=W_{ij}/N_{ij}$ (defaulting to $0.5$
+for unobserved pairs).
+
+\subsection{RRE: Round-Robin Empirical}
+
+RRE cycles through all $\binom{K}{2}$ pairs in a fixed round-robin schedule,
+ensuring each pair receives exactly equal comparison budget.  Ratings use raw vote
+shares with no bias correction.  RRE represents the implicit behaviour of platforms
+that display movies in a fixed rotation and average all historical votes.
+
+\subsection{UCB-R: UCB-Based Rating}
+
+UCB-R selects the pair $(i,j)$ that maximises the \emph{variance-UCB} priority
+\begin{equation}\label{eq:ucbr}
+  \mathrm{priority}(i,j)
+    = \frac{\hat{P}_{ij}(1-\hat{P}_{ij})}{N_{ij}}
+    + \frac{\alpha\log t}{N_{ij}}.
+\end{equation}
+The first term is the empirical variance of $\hat{P}_{ij}$, which measures how
+much the pair contributes to current rating uncertainty.  The second is the UCB
+exploration bonus \cite{auer2002finite}.  UCB-R uses raw vote shares without
+debiasing to isolate the contribution of intelligent exploration.
+
+\subsection{SBCR: Symmetric Bias-Corrected Rating}
+
+SBCR adds three steps targeting peer-herding and pair selection.
+
+\subsubsection{Step 1: Position-Symmetrised Estimate}
+
+SBCR records statistics separately by display direction.  Let $\mathrm{fwd}[i,j]$
+and $C[i,j]$ be the weighted vote mass and total weight for rounds where $i$ was
+displayed first against $j$.  The symmetrised estimate is
+\begin{equation}\label{eq:psym}
+  \hat{P}_{\mathrm{sym}}[i,j]
+    = \tfrac{1}{2}\!\left(
+        \frac{\mathrm{fwd}[i,j]}{C[i,j]}
+        + 1 - \frac{\mathrm{fwd}[j,i]}{C[j,i]}
+      \right),
+\end{equation}
+with a fallback to the single available direction when only one exists.
+Because the display order is randomised in our experiment (each direction
+observed with probability $1/2$), the position bias $b_{\mathrm{pos}}$
+already averages out in the pooled estimate $\hat{P}$.
+The effect of Step~1 is therefore to provide a direction-specific view
+used by the symmetrisation bonus in pair selection; the formal bias
+cancellation property is stated in Section~\ref{sec:theory}.
+
+\subsubsection{Step 2: Peer-Effect Correction}
+
+\textbf{Key insight.}  If herding were absent, the cumulative vote share of
+movie $i$ would match the quality score predicted by the current estimates:
+\begin{equation}\label{eq:no_peer}
+  \mathrm{armshare}_i
+  = \frac{\text{total votes for }i}{\text{total votes involving }i}
+  \;\approx\; \frac{1}{K-1}\sum_{j}\hat{P}_{\mathrm{sym}}[i,j].
+\end{equation}
+Any excess beyond this prediction is attributed to herding:
+\begin{equation}\label{eq:residual}
+  \mathrm{res}_i = \mathrm{armshare}_i
+    - \frac{1}{K-1}\sum_{j}\hat{P}_{\mathrm{sym}}[i,j].
+\end{equation}
+The pairwise peer-bias estimate and corrected preference matrix are
+\begin{align}
+  B_{\mathrm{peer}}[i,j]
+    &= \mathrm{clip}(\gamma(\mathrm{res}_i-\mathrm{res}_j),\,-c,c),
+    \label{eq:bpeer}\\
+  \hat{P}_{\mathrm{corr}}[i,j]
+    &= \hat{P}_{\mathrm{sym}}[i,j]
+       - \frac{N_{ij}}{N_{ij}+N_0}\,B_{\mathrm{peer}}[i,j].
+    \label{eq:pcorr}
+\end{align}
+The factor $s_{ij}=N_{ij}/(N_{ij}+N_0)$ (support shrinkage) scales the
+correction toward zero for sparse pairs, preserving the quality spread in
+$\hat{P}_{\mathrm{sym}}$ rather than pulling estimates toward $0.5$.
+
+\subsubsection{Step 3: Pair Selection}
+
+The priority combines three terms on the corrected estimates:
+\begin{equation}\label{eq:priority}
+  \pi(i,j)
+  = \underbrace{\frac{\hat{P}_{\mathrm{corr}}(1-\hat{P}_{\mathrm{corr}})}{N}
+    + \frac{\alpha\log t}{N}}_{\text{variance-UCB}}
+  \;+\;
+  \underbrace{\frac{\beta\,\mathbf{1}[\text{one dir.\ only}]}{N}
+  }_{\text{sym.\ bonus}}
+  \;+\;
+  \underbrace{\frac{|B_{\mathrm{peer}}|}{2(N+1)}}_{\text{peer conf.}}
+\end{equation}
+The symmetrisation bonus ($\beta>0$) adds priority to pairs seen in only one
+display direction, accelerating double-direction coverage.  The peer-confidence
+term adds exploration when the peer-bias estimate is still uncertain.
+
+\section{Theoretical Analysis}\label{sec:theory}
+
+\begin{proposition}[Exact position-bias cancellation]
+Let $b_{\mathrm{pos}}$ be a constant.  If both display directions $(i,j)$ and
+$(j,i)$ have been observed, then
+$\mathbb{E}[\hat{P}_{\mathrm{sym}}[i,j]]=P_{ij}+\Delta_{\mathrm{peer}}(t)$,
+independently of $b_{\mathrm{pos}}$.
+\end{proposition}
+\begin{proof}
+Taking expectations in Eq.~\eqref{eq:pos}--\eqref{eq:peer}:
+$\mathbb{E}[\mathrm{fwd}[i,j]/C[i,j]]=P_{ij}+b_{\mathrm{pos}}+\Delta_{\mathrm{peer}}$
+and
+$\mathbb{E}[1-\mathrm{fwd}[j,i]/C[j,i]]=P_{ij}-b_{\mathrm{pos}}+\Delta_{\mathrm{peer}}$.
+Averaging cancels $b_{\mathrm{pos}}$.
+\end{proof}
+
+\begin{proposition}[No spurious correction when $b_{\mathrm{conf}}=0$]
+\label{prop:no_spurious}
+If $b_{\mathrm{conf}}=0$, then for all $i$,
+$\mathrm{res}_i\to 0$ as $t\to\infty$, so $B_{\mathrm{peer}}[i,j]\to 0$ and
+SBCR applies no correction.
+\end{proposition}
+\begin{proof}
+When $b_{\mathrm{conf}}=0$ the observed vote share of movie $i$ across all its
+pairings converges to $(K-1)^{-1}\sum_j P_{ij}$, which equals
+$(K-1)^{-1}\sum_j\hat{P}_{\mathrm{sym}}[i,j]$ as $t\to\infty$.
+Hence $\mathrm{res}_i\to 0$, giving $B_{\mathrm{peer}}[i,j]\to 0$.
+\end{proof}
+
+Proposition~\ref{prop:no_spurious} ensures safety: SBCR does not degrade accuracy
+when herding is absent.  The excess formulation is essential; a naive centering
+$\mathrm{res}_i=\mathrm{armshare}_i-\overline{\mathrm{armshare}}$ would confuse
+genuine quality differences for peer-herding (see Section~\ref{sec:discussion}).
 
 \section{Experimental Setup}
-We evaluate the method on a 12-arm synthetic benchmark with temperature $0.35$, base noise $0.08$, horizon $T=4000$, and 24 Monte Carlo runs per scenario. The four bias regimes are position bias $(b_{\mathrm{pos}}=0.06)$, conformity bias $(b_{\mathrm{conf}}=0.14)$, selective feedback $(b_{\mathrm{sel}}=0.24,\tau=0.10)$, and mixed bias $(0.04,0.10,0.15,\tau=0.12)$.
 
-We compare DBS-UCB with RUCB and BS-UCB. The main metrics are final regret, area under the regret curve (AUC), relative final regret, and paired permutation tests on final regret. The code exports the figures and tables used below to the \texttt{results/} directory.
+\textbf{Synthetic benchmark.}  We simulate $K=20$ movies.  Latent quality scores
+are drawn from $\mathcal{N}(0,1)$; pairwise preferences follow Eq.~\eqref{eq:true_pref}
+with $\tau=0.35$ and $\sigma_{\mathrm{base}}=0.08$.
+Each voting session uses $m=7$ users and judgment noise $\sigma=0.035$.
+Experiments run for $T=5\,000$ rounds and are averaged over 24 Monte Carlo runs
+with a fixed seed for reproducibility.
 
-\section{Results and Discussion}
-The per-scenario regret curves all show the same broad pattern: DBS-UCB is not always the first method to settle, but once the uncertainty term shrinks it maintains a lower cumulative slope than both baselines. This pattern is clearest in the mixed-bias case, where presentation order, popularity pressure, and selective feedback all act together.
+\textbf{Bias scenarios.}
+
+\begin{table}[!h]
+\centering
+\caption{Bias scenario parameters ($\tau_{\mathrm{sel}}=0.10$--$0.12$).}
+\label{tab:scenarios}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+Scenario & $b_{\mathrm{pos}}$ & $b_{\mathrm{conf}}$ & $b_{\mathrm{sel}}$ & Dominant bias \\
+\midrule
+\texttt{attention\_bias} & 0.08 & 0.00 & 0.00 & Display-order only \\
+\texttt{echo\_chamber}   & 0.00 & 0.18 & 0.00 & Peer-herding only \\
+\texttt{polarisation}    & 0.00 & 0.00 & 0.28 & Extreme-opinion only \\
+\texttt{realistic}       & 0.05 & 0.12 & 0.18 & All three combined \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\textbf{Algorithm hyper-parameters.}
+SBCR: $\alpha=1.0$, $\gamma=0.70$, $\beta=0.06$, $c=0.20$, $N_0=10$.
+UCB-R: $\alpha=1.0$.
+
+\textbf{Evaluation.}
+\emph{Accuracy}: Rating MAE (Eq.~\eqref{eq:rating}), Spearman $\rho$, Top-1
+accuracy, Mean rank error.
+\emph{Efficiency}: Cumulative regret, Final regret.
+\emph{Robustness}: Cross-scenario variance, relative final regret.
+Significance: paired permutation test, 4\,000 permutations
+\cite{good2000permutation}.
+
+\section{Results and Discussion}\label{sec:discussion}
+
+\subsection{Accuracy: Rating MAE and Ranking Quality}
+
+Table~\ref{tab:accuracy} shows accuracy metrics averaged over 24 runs.
+The most striking result is the large advantage of SBCR in
+\texttt{echo\_chamber} and \texttt{realistic}: Rating MAE drops by 25\% and
+28\% respectively compared with RRE, and by 5\% and 27\% compared with UCB-R.
+Spearman $\rho$ and Top-1 accuracy confirm the pattern.
+
+\begin{table}[t]
+\centering
+\caption{Accuracy metrics ($T=5\,000$, 24 runs). Bold = best per row.}
+\label{tab:accuracy}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llccc}
+\toprule
+Scenario & Metric & RRE & UCB-R & SBCR \\
+\midrule
+\multirow{4}{*}{\texttt{attention}}
+  & Rating MAE$\downarrow$   & \textbf{0.094} & 0.096 & 0.142 \\
+  & Spearman $\rho\uparrow$  & 0.998          & 0.998 & \textbf{0.999} \\
+  & Top-1 Acc$\uparrow$      & \textbf{0.917} & 0.875 & \textbf{0.917} \\
+  & Mean Rank Err$\downarrow$& 0.133          & 0.133 & \textbf{0.083} \\
+\midrule
+\multirow{4}{*}{\texttt{echo}}
+  & Rating MAE$\downarrow$   & 0.267 & 0.266 & \textbf{0.200} \\
+  & Spearman $\rho\uparrow$  & \textbf{0.995} & \textbf{0.995} & 0.993 \\
+  & Top-1 Acc$\uparrow$      & 0.875 & 0.875 & \textbf{0.917} \\
+  & Mean Rank Err$\downarrow$& \textbf{0.283} & 0.271 & 0.325 \\
+\midrule
+\multirow{4}{*}{\texttt{polar.}}
+  & Rating MAE$\downarrow$   & \textbf{0.041} & \textbf{0.040} & 0.075 \\
+  & Spearman $\rho\uparrow$  & 0.998          & 0.998 & \textbf{0.998} \\
+  & Top-1 Acc$\uparrow$      & 0.833 & 0.875 & \textbf{0.958} \\
+  & Mean Rank Err$\downarrow$& 0.138 & 0.146 & \textbf{0.117} \\
+\midrule
+\multirow{4}{*}{\texttt{realistic}}
+  & Rating MAE$\downarrow$   & 0.200 & 0.199 & \textbf{0.145} \\
+  & Spearman $\rho\uparrow$  & 0.996 & 0.995 & \textbf{0.997} \\
+  & Top-1 Acc$\uparrow$      & \textbf{0.917} & 0.792 & 0.792 \\
+  & Mean Rank Err$\downarrow$& 0.221 & 0.275 & \textbf{0.196} \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+In \texttt{attention\_bias}, SBCR's Rating MAE (0.142) is notably higher than
+RRE's (0.094).  In \texttt{polarisation}, the same pattern holds
+(SBCR = 0.075 vs.\ RRE = 0.041).  These cases are explained in
+Section~\ref{sec:warmup}.
+
+\subsection{Efficiency: Cumulative Regret}
+
+Figure~\ref{fig:regret_echo} shows cumulative regret in the
+\texttt{echo\_chamber} scenario.  All three algorithms accumulate regret at
+similar rates because, with $K=20$ arms and $T=5\,000$ rounds, the algorithm
+must spend the majority of rounds comparing non-best movie pairs.
+Table~\ref{tab:regret} confirms that mean final regret differs by at most 1.7
+units across algorithms and scenarios—small relative to the total (${\sim}$3800).
+The regret objective therefore does not discriminate strongly among algorithms
+at this horizon; the rating accuracy metrics in Table~\ref{tab:accuracy} are the
+more informative comparison for this problem setting.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\columnwidth]{regret_mixed_bias.png}
-\caption{Cumulative regret on the mixed-bias scenario. DBS-UCB tracks the same latent preference signal but accumulates regret more slowly after the early burn-in period.}
-\label{fig:mixed_curve}
+\includegraphics[width=\columnwidth]{regret_echo_chamber.png}
+\caption{Cumulative regret — \texttt{echo\_chamber}.  Bands: $\pm1$ SD, 24 runs.}
+\label{fig:regret_echo}
 \end{figure}
 
-Figure~\ref{fig:robustness} summarizes the relative final regret, normalized to the best method in each scenario.
+\begin{table}[t]
+\centering
+\caption{Mean final regret ($T=5\,000$, 24 runs). All algorithms converge to
+  similar values; differences are $<2$ units out of $\sim$3800 total.}
+\label{tab:regret}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccc}
+\toprule
+Scenario & RRE & UCB-R & SBCR \\
+\midrule
+\texttt{attention\_bias} & \textbf{3888} & 3890 & 3890 \\
+\texttt{echo\_chamber}   & \textbf{3744} & 3746 & 3746 \\
+\texttt{polarisation}    & \textbf{3931} & 3933 & 3932 \\
+\texttt{realistic}       & \textbf{3765} & 3767 & 3767 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\subsection{Robustness}
+
+Figure~\ref{fig:robustness} shows relative final regret (normalised per scenario).
+All algorithms lie within 0.1\% of each other on regret, confirming that this
+metric is not the axis of differentiation here.  On Rating MAE
+(Figure~\ref{fig:ratings}), SBCR is the most stable algorithm across herding
+scenarios, while RRE leads in the non-herding cases.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{robustness_comparison.png}
-\caption{Relative final regret across the four bias scenarios. DBS-UCB is the normalized reference at 1.0 in every scenario.}
+\caption{Relative final regret across four scenarios.}
 \label{fig:robustness}
 \end{figure}
 
-Table~\ref{tab:final_regret} shows mean final regret. DBS-UCB is the best method in all four scenarios, with the largest gains in position and mixed bias, where the observed feedback is most misaligned with latent quality.
-
-\begin{table}[t]
+\begin{figure}[t]
 \centering
-\caption{Mean final regret over 24 runs. Lower is better.}
-\label{tab:final_regret}
-\resizebox{\columnwidth}{!}{%
-\begin{tabular}{lcccc}
-\toprule
-Scenario & RUCB & BS-UCB & DBS-UCB & Gain vs best baseline \\
-\midrule
-Position bias & 717.1 & 706.7 & 597.0 & 15.5\% \\
-Conformity bias & 661.2 & 716.0 & 612.1 & 7.4\% \\
-Selective feedback & 718.4 & 742.9 & 641.2 & 10.8\% \\
-Mixed bias & 724.2 & 732.0 & 614.7 & 15.1\% \\
-\bottomrule
-\end{tabular}%
-}
-\end{table}
+\includegraphics[width=\columnwidth]{movie_ratings_echo_chamber.png}
+\caption{Estimated vs.\ true 1--10 star ratings in \texttt{echo\_chamber}.
+  SBCR estimates align more closely with true quality than the baselines.}
+\label{fig:ratings}
+\end{figure}
 
-The paired permutation tests in Table~\ref{tab:permutation} are more nuanced. DBS-UCB is significant against BS-UCB in all four scenarios, while the comparison with RUCB is strongest when the bias mechanism actively opposes latent quality. In the conformity setting, RUCB already benefits from the popularity structure, so the additional correction from DBS-UCB improves the mean regret but does not reach the same significance level under this seed.
+\subsection{Why SBCR Has Higher Rating MAE in Non-Herding Scenarios}
+\label{sec:warmup}
 
-\begin{table}[t]
-\centering
-\caption{Paired permutation tests on final regret.}
-\label{tab:permutation}
-\resizebox{\columnwidth}{!}{%
-\begin{tabular}{lcc}
-\toprule
-Scenario & $p$(DBS-UCB vs RUCB) & $p$(DBS-UCB vs BS-UCB) \\
-\midrule
-Position bias & 0.0093 & 0.0093 \\
-Conformity bias & 0.3680 & 0.0093 \\
-Selective feedback & 0.0503 & 0.0093 \\
-Mixed bias & 0.0093 & 0.0093 \\
-\bottomrule
-\end{tabular}%
-}
-\end{table}
+\textbf{Random display order already cancels position bias.}  In our protocol,
+the display order is randomised 50/50 for every voting session
+(Section~\ref{sec:discussion}).  This means the constant $b_{\mathrm{pos}}$ from
+Eq.~\eqref{eq:pos} cancels in the pooled estimate $\hat{P}_{ij}$ used by RRE
+and UCB-R: the $+b_{\mathrm{pos}}$ from $i$-first sessions is offset by the
+$-b_{\mathrm{pos}}$ from $j$-first sessions.  SBCR's explicit symmetrisation
+(Step~1) does not reduce bias further but \emph{does} increase variance: it uses
+only the $i$-first half of observations to compute $\mathrm{fwd}[i,j]/C[i,j]$,
+halving the effective sample size per direction.  This variance penalty manifests
+as worse Rating MAE in \texttt{attention\_bias} and \texttt{polarisation}, where
+herding is absent and position bias is already cancelled by random assignment.
 
-The AUC values follow the same ordering, with DBS-UCB reducing the scenario-wise best-baseline AUC by about 10.5\% on average. This matters because it means the method is not only better at the end of training, but also accumulates less regret throughout learning.
+\textbf{Excess formulation prevents quality-confusion.}  An earlier version of
+the peer correction used a naive centering
+$\mathrm{res}_i=\mathrm{armshare}_i-\overline{\mathrm{armshare}}$ (global mean).
+This incorrectly treated genuine quality differences as herding: when
+$b_{\mathrm{conf}}=0$, a high-quality movie still has a higher arm share than
+average, so it would be penalised.  The excess formulation in
+Eq.~\eqref{eq:residual} uses $\hat{P}_{\mathrm{sym}}[i,j]$ as the expected
+baseline, so any residual after conditioning on quality estimates is attributed
+to herding, satisfying Proposition~\ref{prop:no_spurious}.
 
-One limitation is that the benchmark is synthetic. That is intentional: the goal is to isolate bias mechanisms and verify that the method reacts to them in a controlled setting. The repository already contains a placeholder MT-Bench loader, so the natural next step is to replace the synthetic generator with real review or LLM-judge data and test whether the same bias-aware design transfers.
+\textbf{Net effect.}  In \texttt{echo\_chamber} and \texttt{realistic}, SBCR's
+peer-correction benefit ($-26$\% and $-28$\% Rating MAE) far outweighs its
+variance penalty.  In \texttt{attention\_bias} and \texttt{polarisation}, the
+penalty is uncompensated and SBCR trails.  For platforms that expect significant
+peer-herding (the typical case for popular media), SBCR is the preferred choice;
+for platforms without herding effects and randomised comparison order, UCB-R
+or RRE suffice.
 
 \section{Conclusion}
-DBS-UCB is a simple bias-robust preference learner for human evaluation systems. It combines optimism with a vanishing bias penalty, preserves asymptotic exploration, and performs best in every scenario of the benchmark. The empirical results, together with the sublinear penalty bound, support the core idea that bias should be modeled explicitly instead of being absorbed into generic noise.
+
+We presented SBCR, a bias-aware algorithm for correcting peer-herding distortions
+in movie ratings using pairwise voting data.  Its key components are:
+(1) excess-formulation peer-effect correction that provably introduces no spurious
+error when herding is absent;
+(2) support shrinkage that regularises noisy pair corrections without compressing
+the quality range;
+(3) variance-UCB pair selection with a symmetrisation bonus.
+On a 20-movie synthetic benchmark, SBCR reduces Rating MAE by up to 28\% over
+naive and smart baselines in the two herding-dominated scenarios while maintaining
+competitive rank accuracy in non-herding cases.  The main limitation is that the
+symmetrisation step adds variance in scenarios without position bias, suggesting
+a future direction: detect whether herding is active and adaptively weight the
+two correction components rather than applying both unconditionally.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}

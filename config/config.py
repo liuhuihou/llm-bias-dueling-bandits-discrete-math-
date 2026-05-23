@@ -8,56 +8,74 @@ RAW_DATA_DIR = RESULTS_DIR / "raw_data"
 
 DEFAULT_CONFIG = {
     "random_seed": 42,
-    "n_arms": 12,
-    "horizon": 4000,
+    "n_arms": 20,           # movies in the candidate pool
+    "horizon": 5000,        # pairwise voting sessions per Monte Carlo run
     "n_runs": 24,
     "preference_temperature": 0.35,
     "base_noise": 0.08,
-    "algorithms": ["RUCB", "BS-UCB", "DBS-UCB"],
-    "dbs_params": {"alpha": 1.25, "bias_penalty": 0.85},
-    "rucb_params": {"alpha": 2.0},
-    "bsucb_params": {"beta": 1.5},
+    "algorithms": ["RRE", "UCB-R", "SBCR"],
+    # Algorithm hyper-parameters.
+    "rre_params": {},
+    "ucbr_params": {"alpha": 1.0},
+    "sbcr_params": {
+        "alpha": 1.0,
+        "peer_gamma": 0.70,
+        "sym_bonus": 0.06,
+        "peer_clip": 0.20,
+        "min_count": 10,
+    },
+    # ── Bias scenarios ────────────────────────────────────────────────────
+    # Four scenarios isolate and combine the three bias mechanisms that
+    # arise in real movie rating platforms.
+    #
+    # attention_bias   : Anchoring effect – first-listed movie gets more votes
+    #                    regardless of quality (position_bias only).
+    # echo_chamber     : Herding behaviour – movies already popular keep getting
+    #                    higher votes (conformity_bias only, strong amplitude).
+    # polarisation     : Near-tie amplification – when two movies are similar
+    #                    in quality, polarised users dominate (selective_bias only).
+    # realistic        : Mild combination of all three, representing a real
+    #                    platform with moderate but simultaneous biases.
     "scenarios": [
         {
-            "name": "position_bias",
-            "position_bias": 0.06,
+            "name": "attention_bias",
+            "position_bias": 0.08,
             "conformity_bias": 0.00,
             "selective_bias": 0.00,
             "selective_threshold": 0.12,
         },
         {
-            "name": "conformity_bias",
+            "name": "echo_chamber",
             "position_bias": 0.00,
-            "conformity_bias": 0.14,
+            "conformity_bias": 0.18,
             "selective_bias": 0.00,
             "selective_threshold": 0.12,
         },
         {
-            "name": "selective_feedback",
+            "name": "polarisation",
             "position_bias": 0.00,
             "conformity_bias": 0.00,
-            "selective_bias": 0.24,
+            "selective_bias": 0.28,
             "selective_threshold": 0.10,
         },
         {
-            "name": "mixed_bias",
-            "position_bias": 0.04,
-            "conformity_bias": 0.10,
-            "selective_bias": 0.15,
+            "name": "realistic",
+            "position_bias": 0.05,
+            "conformity_bias": 0.12,
+            "selective_bias": 0.18,
             "selective_threshold": 0.12,
         },
     ],
 }
 
 PLOT_CONFIG = {
-    "title": "Bias-Robust Dueling Bandits",
+    "title": "Movie Rating Bias Correction",
     "dpi": 160,
     "figsize": (9, 5),
 }
 
 
 def ensure_runtime_dirs() -> None:
-    """Create runtime output folders if they do not exist."""
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)

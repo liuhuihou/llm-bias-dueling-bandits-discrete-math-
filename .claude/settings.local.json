@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -m src.main --quick)",
+      "Bash(python -m src.main)"
+    ]
+  }
+}

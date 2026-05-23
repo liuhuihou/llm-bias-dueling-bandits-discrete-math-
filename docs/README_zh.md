@@ -1,583 +1,283 @@
-# llm-bias-dueling-bandits
+# 电影评分偏置修正：基于两两比较与自适应去偏的评分框架
 
-面向 LLM 人类偏好评测偏置的 dueling bandits 实验框架。项目通过合成偏好矩阵和可配置的人类反馈偏置，比较 RUCB、BS-UCB 与 DBS-UCB 在不同偏置场景下的累计遗憾、最终遗憾和鲁棒性表现。
+## 1. 项目背景与动机
 
-## 项目目标
+在线电影平台（如豆瓣、IMDb、Letterboxd）每天汇聚海量用户评分，但这些评分普遍受到以下三类系统性偏置的干扰：
 
-在 LLM 输出偏好评测中，人工或类人工反馈常受到展示位置、群体从众和选择性反馈等因素影响。该项目将这些因素建模为 biased dueling environment，并评估偏置鲁棒算法能否在受污染反馈下更稳定地识别优选模型或策略。
+**展示顺序偏置（Attention bias）**
+比较两部电影时，用户倾向于对第一个看到的选项给出更高评价——即注意力锚定效应。
 
-核心流程包括：
+**从众效应偏置（Echo-chamber bias）**
+用户评分受已有评分影响：当某部电影当前评分较高时，后续用户会给出更高评分，形成"好评雪球"效应。这正是课程要求中提到的典型案例。
 
-1. 生成真实 pairwise preference matrix。
-2. 在不同偏置机制下模拟人类二元比较反馈。
-3. 运行多种 dueling bandit 算法。
-4. 统计累计遗憾、AUC regret、最终遗憾和 paired permutation test。
-5. 输出图表、CSV、JSON、Markdown 和 LaTeX 表格。
+**极化反馈偏置（Polarisation bias）**
+当两部电影真实质量接近时，持极端意见的用户主导了投票，导致近似平局的比较结果被放大，无法稳定区分两者。
 
-## 目录结构
+这三类偏置共同导致：平台最终呈现的评分排名可能严重偏离电影的真实质量顺序。
 
-```text
-llm-bias-dueling-bandits/
-├── config/
-│   └── config.py                 # 实验规模、随机种子、算法参数和偏置场景
-├── docs/
-│   ├── project_report.tex         # 项目报告 LaTeX 源文件
-│   ├── project_report.pdf         # 已编译报告
-│   └── references.bib             # 参考文献
-├── results/
-│   ├── figures/                   # 实验图像输出
-│   ├── logs/                      # 预留日志目录
-│   └── raw_data/                  # CSV/JSON/Markdown/LaTeX 数据输出
-├── src/
-│   ├── main.py                    # 实验入口
-│   ├── algorithms/                # RUCB、BS-UCB、DBS-UCB
-│   ├── data/                      # 合成数据与 MT-Bench 预留加载器
-│   └── utils/                     # 指标、绘图和报告生成工具
-├── requirements.txt
-└── README.md
+**项目目标**：建模上述偏置机制，设计能够在受污染的两两投票反馈下仍然稳定输出修正评分的算法。
+
+---
+
+## 2. 问题建模
+
+### 2.1 两两比较框架
+
+电影数量庞大，直接对每部电影收集独立评分效率低且受主观尺度影响大。本项目采用**两两比较（pairwise comparison）**作为核心反馈机制：系统每轮选择两部电影展示给一组用户，用户投票选出更偏好的一部，系统记录投票份额。
+
+设候选电影集合为 `M = {1, 2, ..., K}`，真实偏好矩阵 `P` 满足：
+```
+P_ij = Pr(电影 i 在真实质量上优于电影 j)
+P_ij + P_ji = 1,   P_ii = 0.5
 ```
 
-## 环境要求
+若存在 `m*` 使 `P_{m*,j} > 0.5` 对所有 `j ≠ m*` 成立，则 `m*` 为最优电影（Condorcet winner）。
 
-- Python 3.10 或更高版本
-- NumPy
-- Matplotlib
+### 2.2 合成电影质量矩阵
 
-安装依赖：
+每部电影被分配潜在质量分数 `u_i ~ N(0,1)`，两两偏好通过 logistic 函数生成：
+```
+P_ij = sigmoid((u_i - u_j) / τ)
+```
+再叠加电影级独立扰动 `ε_i ~ N(0, σ_base)`，使偏好矩阵不完全由一维质量决定。
 
-```bash
-pip install -r requirements.txt
+### 2.3 偏置反馈模型
+
+一次投票会话的完整生成过程（movie i 展示在前）：
+
+```
+歧义权重:   A_ij = clip(1 - |P_ij - 0.5| / τ_sel, 0, 1)
+判断噪声:   P_noisy = clip(P_ij + N(0, σ*(1+A_ij)), p_min, p_max)
+展示偏置:   Δ_pos = b_pos                                    （常数，偏向第一个展示项）
+从众偏置:   Δ_peer = b_conf · tanh(3·(pop_i(t) - pop_j(t)))  （动态，随历史好评变化）
+极化偏置:   Δ_sel  = 0.5·b_sel·A_ij·(0.65·social_cue + 0.35) （仅在近似平局时激活）
+观测概率:   Q_ij(t) = clip(P_noisy + Δ_pos + Δ_peer + Δ_sel, p_min, p_max)
+投票结果:   votes_i ~ Binomial(audience_size, Q_ij(t))
 ```
 
-建议使用虚拟环境：
+### 2.4 Regret 指标
 
-```bash
-python -m venv .venv
+设 `m*` 为最优电影，第 `t` 轮比较 `(i_t, j_t)` 的即时 regret：
 ```
-
-Windows PowerShell：
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-macOS/Linux：
-
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-如果 Windows 上的 `python` 命令指向 Microsoft Store 占位程序，可以直接调用虚拟环境解释器：
-
-```powershell
-.\.venv\Scripts\python.exe -m src.main --quick
-```
-
-## 快速开始
-
-请在项目根目录运行命令。
-
-快速调试实验：
-
-```bash
-python -m src.main --quick
-```
-
-完整默认实验：
-
-```bash
-python -m src.main
-```
-
-自定义实验规模：
-
-```bash
-python -m src.main --horizon 6000 --runs 30
-```
-
-参数说明：
-
-| 参数 | 含义 | 默认值 |
-|---|---|---:|
-| `--quick` | 使用较小规模快速验证流程 | `False` |
-| `--horizon` | 每次 Monte Carlo run 的比较轮数 | `config/config.py` 中的 `horizon` |
-| `--runs` | 每个场景的 Monte Carlo 重复次数 | `config/config.py` 中的 `n_runs` |
-
-`--horizon` 和 `--runs` 必须为正整数。
-
-## 实验配置
-
-主要配置在 `config/config.py`：
-
-| 字段 | 说明 |
-|---|---|
-| `random_seed` | 全局随机种子 |
-| `n_arms` | 候选 arm 数量，可对应待比较模型或策略数量 |
-| `horizon` | 每次运行的 dueling 轮数 |
-| `n_runs` | 每个场景下的 Monte Carlo 重复次数 |
-| `preference_temperature` | 真实偏好矩阵生成温度 |
-| `base_noise` | arm 级别偏好扰动强度 |
-| `algorithms` | 参与比较的算法列表 |
-| `dbs_params` | DBS-UCB 参数 |
-| `rucb_params` | RUCB 参数 |
-| `bsucb_params` | BS-UCB 参数 |
-| `scenarios` | 偏置场景配置 |
-
-## 偏置场景
-
-项目默认包含四类 synthetic human-bias scenarios：
-
-| 场景 | 机制 |
-|---|---|
-| `position_bias` | 用户更倾向选择第一个展示的候选项 |
-| `conformity_bias` | 用户受公开胜率或流行度影响 |
-| `selective_feedback` | 在接近五五开的比较中，反馈更容易被放大或扰动 |
-| `mixed_bias` | 同时叠加位置偏置、从众偏置和选择性反馈偏置 |
-
-## 算法
-
-| 算法 | 文件 | 说明 |
-|---|---|---|
-| RUCB | `src/algorithms/baselines.py` | Relative UCB baseline |
-| BS-UCB | `src/algorithms/baselines.py` | 基于使用频次和置信上界的 baseline |
-| DBS-UCB | `src/algorithms/dbs_ucb.py` | 带偏置惩罚和不确定性探索的 debiasing-aware 方法 |
-
-所有算法继承自 `BaseDuelingBanditAlgorithm`，核心接口为：
-
-- `select_pair()`：选择本轮要比较的两个 arms。
-- `update(i, j, winner)`：根据观测胜者更新胜负统计。
-- `estimated_preferences()`：返回当前偏好估计矩阵。
-- `confidence_radius()`：返回 UCB 置信半径。
-
-## 算法思路与理论基础
-
-### 问题建模
-
-项目采用 dueling bandits 建模二元偏好学习问题。与普通 multi-armed bandit 不同，系统每轮不是直接观察某个 arm 的标量 reward，而是选择两个 arms 进行比较，并只观察二者谁胜出。
-
-设候选集合为：
-
-```text
-A = {1, 2, ..., K}
-```
-
-真实偏好由矩阵 `P` 表示：
-
-```text
-P_ij = Pr(i beats j)
-P_ij + P_ji = 1
-P_ii = 0.5
-```
-
-其中 `P_ij > 0.5` 表示 arm `i` 在真实偏好上强于 arm `j`。如果存在一个 arm `a*` 满足：
-
-```text
-P_a*,j > 0.5, for all j != a*
-```
-
-则 `a*` 被称为 Condorcet winner。实验中的学习目标是在有限比较轮数内尽快把比较集中到优质 arms 上，降低累计 regret。
-
-### 合成偏好矩阵
-
-`SyntheticDuelingGenerator` 先为每个 arm 采样一个潜在 utility，然后通过 logistic 函数构造 pairwise preference：
-
-```text
-P_ij = sigmoid((u_i - u_j) / temperature)
-```
-
-随后加入 arm 级别的基础扰动 `base_noise`，使偏好矩阵不完全由一维 utility 决定。这样可以生成满足反对称约束的偏好矩阵，同时保留一定非理想性。
-
-生成后满足：
-
-```text
-P_ji = 1 - P_ij
-P_ii = 0.5
-```
-
-### 偏置反馈模型
-
-真实偏好矩阵 `P` 不会直接被算法观察到。算法观察到的是受人类反馈偏置污染后的胜率 `Q_ij(t)`。在代码中，`BiasedDuelingEnvironment.observed_probability(i, j)` 对真实概率 `P_ij` 加入三类偏置：
-
-位置偏置：
-
-```text
-Q_ij(t) = P_ij + b_pos
-```
-
-当 `i` 被放在第一个展示位置时，它会额外获得 `b_pos` 的胜率提升。这个机制模拟用户更容易选择先出现选项的倾向。
-
-从众偏置：
-
-```text
-pop_i(t) = (public_wins_i + 1) / (public_duels_i + 2)
-Q_ij(t) = P_ij + b_conf * (pop_i(t) - pop_j(t))
-```
-
-如果某个 arm 在公开历史中更受欢迎，它会在后续比较中获得额外优势。这个机制模拟排行榜、点赞数、已有评价等社会信号对人类判断的影响。
-
-选择性反馈偏置：
-
-```text
-if |P_ij - 0.5| <= tau:
-    with probability b_sel:
-        Q_ij(t) = P_ij + 0.12 * sign(pop_i(t) - pop_j(t))
-```
-
-当两个 arms 的真实差距很小时，反馈更容易受到社会信号扰动。这个机制模拟近似平局场景中用户判断不稳定、容易被外部线索放大的情况。
-
-最终观测概率会被裁剪到 `[0.02, 0.98]`，避免出现确定性反馈：
-
-```text
-Q_ij(t) = clip(Q_ij(t), 0.02, 0.98)
-```
-
-### 经验偏好估计
-
-每个算法维护两个矩阵：
-
-- `wins[i, j]`：arm `i` 战胜 arm `j` 的次数。
-- `comparisons[i, j]`：arm `i` 与 arm `j` 被比较的次数。
-
-经验偏好估计为：
-
-```text
-P_hat_ij(t) = wins[i, j] / comparisons[i, j]
-```
-
-如果某对 arms 尚未比较，默认估计为 `0.5`，表示未知状态下不偏向任何一方。
-
-### UCB 置信上界
-
-项目中所有算法都基于 optimism under uncertainty。核心思想是：对于观察次数少的 pair，偏好估计不确定性更高，因此应该给予更大的探索奖励。
-
-代码中的置信半径为：
-
-```text
-r_ij(t) = sqrt(alpha * log(t) / max(N_ij(t), 1))
-```
-
-其中：
-
-- `N_ij(t)` 是 pair `(i, j)` 的比较次数。
-- `alpha` 控制探索强度。
-- `log(t)` 使置信半径随时间缓慢增长。
-- `1 / sqrt(N_ij(t))` 使频繁比较过的 pair 不确定性下降。
-
-这类形式来自 Hoeffding concentration bound。对于 Bernoulli 比较反馈，经验均值会以高概率集中在真实均值附近：
-
-```text
-Pr(|P_hat_ij - P_ij| >= epsilon) <= 2 exp(-2 N_ij epsilon^2)
-```
-
-因此 UCB 方法使用：
-
-```text
-P_hat_ij(t) + r_ij(t)
-```
-
-作为 pairwise preference 的乐观估计，在探索不足时主动尝试不确定选项，在证据充分后逐渐转向利用。
-
-### RUCB 原理
-
-RUCB 是 dueling bandits 中经典的 relative upper confidence bound baseline。它的核心思路是寻找可能击败所有其他 arms 的 champion。
-
-代码中的候选 champion 条件为：
-
-```text
-UCB_ij(t) >= 0.5, for all j
-```
-
-也就是 arm `i` 在乐观估计下仍可能不输给任何对手。若没有满足条件的 arm，则退化为从所有 arms 中选择。
-
-选出 champion 后，RUCB 选择最可能击败 champion 的 opponent：
-
-```text
-opponent = argmax_j UCB_j,champion(t)
-```
-
-这样做的意义是用最强挑战者验证 champion 是否真的可靠。RUCB 在无偏、稳定反馈下有较好的理论基础，但当观测反馈被位置、从众或选择性反馈系统性污染时，它会把偏置当成真实偏好的一部分。
-
-### BS-UCB 原理
-
-BS-UCB 是项目中的均衡探索 baseline。它先选择历史使用次数最少的 arm：
-
-```text
-first = argmin_i usage_i(t)
-```
-
-然后为该 arm 选择 UCB 分数最高的挑战者：
-
-```text
-second = argmax_j P_hat_j,first(t) + beta * r_j,first(t)
-```
-
-这个方法的设计意图是避免某些 arms 长期缺少比较，提升覆盖率。它比纯随机探索更有方向性，但没有显式建模反馈偏置，因此在 biased environment 中仍可能受到系统性误导。
-
-### DBS-UCB 原理
-
-DBS-UCB 是项目提出的 debiasing-aware UCB 策略。它保留 UCB 的乐观探索，同时对疑似受偏置影响的 arm 加入逐渐衰减的惩罚项。
-
-首先计算每个 arm 的平均经验强度：
-
-```text
-mean_strength_i(t) = average_j P_hat_ij(t)
-```
-
-再计算平均探索奖励：
-
-```text
-explore_bonus_i(t) = average_j r_ij(t)
-```
-
-项目使用一个简单的偏置签名：
-
-```text
-estimated_bias_i(t) = |mean_strength_i(t) - 0.5|
-```
-
-直觉是：在受偏置污染的早期反馈中，某些 arms 可能因为位置或流行度被异常推高，导致平均胜率快速偏离中性值。DBS-UCB 不直接相信这种偏离，而是在主选择分数中扣除一个偏置惩罚：
-
-```text
-lambda_t = bias_penalty / sqrt(t)
-
-primary_score_i(t)
-  = mean_strength_i(t)
-    - lambda_t * estimated_bias_i(t)
-    + explore_bonus_i(t)
-```
-
-第一只 arm 的选择规则为：
-
-```text
-first = argmax_i primary_score_i(t)
-```
-
-第二只 arm 用于挑战第一只 arm，优先选择不确定且接近胜负边界的对手：
-
-```text
-near_boundary_j(t) = 0.5 - |P_hat_j,first(t) - 0.5|
-challenge_score_j(t) = r_j,first(t) + near_boundary_j(t)
-second = argmax_j challenge_score_j(t)
-```
-
-这样做有两个目的：
-
-1. 对高不确定 pair 保持探索。
-2. 对接近 `0.5` 的关键 pair 追加比较，因为这些 pair 最可能改变排序判断。
-
-### DBS-UCB 的理论直觉
-
-DBS-UCB 的关键是 `lambda_t = lambda_0 / sqrt(t)`。这个偏置惩罚在早期较强，可以抑制由位置、从众或选择性反馈导致的异常乐观估计；随着样本增多，惩罚逐渐变弱，避免长期压制真实强 arm。
-
-如果偏置签名满足：
-
-```text
-0 <= estimated_bias_i(t) <= 1
-```
-
-则累计偏置惩罚的量级满足：
-
-```text
-sum_{t=1}^T lambda_t * estimated_bias_i(t)
-<= lambda_0 * sum_{t=1}^T 1 / sqrt(t)
-<= 2 lambda_0 sqrt(T)
-```
-
-因此惩罚项是 sublinear 的：
-
-```text
-O(sqrt(T))
-```
-
-这意味着 DBS-UCB 的惩罚主要影响早期决策，不会在线性量级上支配长期学习过程。换句话说，它在早期更保守地抵抗偏置，在后期仍保留 UCB 类算法依赖数据收敛的性质。
-
-### 算法理论如何投入实际
-
-在真实评价系统中，算法并不能控制人类评审者内心如何形成判断。它能控制的是评价流程：选择哪些对象被比较、以什么顺序展示、如何记录胜负结果，以及如何把有偏反馈转换成更可靠的排序。
-
-实际部署时，可以把每个待评价对象看作一个 arm，例如一篇论文、一个商品、一部电影或一个 LLM 回答。系统每轮选择两个 arms 给评审者比较，记录评审者选择的赢家，然后更新 `P_hat` 和置信半径。最终输出的不是简单投票平均值，而是基于 pairwise model 学到的 debiased preference ranking。
-
-DBS-UCB 中的理论项对应到实际流程如下：
-
-1. `P_hat_ij(t)` 对应当前系统认为 `i` 胜过 `j` 的经验概率。
-2. `r_ij(t)` 对应证据不足程度，用来决定哪些 pair 还需要更多人工比较。
-3. `estimated_bias_i(t)` 对应早期异常偏离的风险信号，提示该 arm 可能受到展示位置、流行度或选择性反馈影响。
-4. `lambda_t = lambda_0 / sqrt(t)` 对应逐渐放松的保守校准策略：早期更谨慎，后期更多相信累积数据。
-5. 最终 ranking 可以用于推荐排序、模型输出筛选、论文/商品/电影评价聚合等场景。
-
-因此，这个项目的实际意义不是改变人的评分行为，而是在人的评分已经可能受偏置影响时，用算法设计评价流程和排序层，减少偏置对最终结果的影响。
-
-### 从胜率矩阵转回评分
-
-DBS-UCB 的直接输出是偏好估计矩阵 `P_hat`，其中：
-
-```text
-P_hat_ij(T) = 经过 T 轮比较后，系统估计 i 胜过 j 的概率
-```
-
-为了让结果回到常见评分系统，可以把每个对象对其他对象的平均胜率定义为修正后分数：
-
-```text
-q_i = average_{j != i} P_hat_ij(T)
-```
-
-其中 `q_i` 的取值在 0 到 1 之间，表示对象 `i` 在当前候选集合中平均战胜其他对象的概率。然后可以映射到常见评分尺度：
-
-```text
-百分制评分: rating_i = 100 * q_i
-
-五星评分: stars_i = 1 + 4 * q_i
-```
-
-例如，如果某个 LLM 回答的修正后平均胜率为 `q_i = 0.80`，则可以得到：
-
-```text
-rating_i = 80
-stars_i = 4.2
-```
-
-需要强调的是，这个评分是相对评分：它表示该对象在当前候选集合中相对于其他对象的表现，而不是一个脱离比较集合的绝对质量分数。因此，两两比较是中间建模方式，最终系统仍然可以输出用户熟悉的百分制分数或五星评分。
-
-### Regret 理论
-
-项目使用 strong regret。设 `a*` 是 Condorcet winner，则一轮比较 `(i_t, j_t)` 的即时 regret 定义为：
-
-```text
-r_t = (P_a*,i_t - 0.5) + (P_a*,j_t - 0.5)
-```
-
-代码中等价实现为：
-
-```text
-r_t = max(P[a*, i_t] + P[a*, j_t] - 1, 0)
-```
-
-累计 regret 为：
-
-```text
+r_t = max(P[m*, i_t] + P[m*, j_t] - 1, 0)
 R_T = sum_{t=1}^T r_t
 ```
 
-如果算法频繁选择远离 Condorcet winner 的 arms，`R_T` 会增长更快；如果算法逐渐集中到最优或接近最优 arms，累计 regret 的斜率会下降。
+---
 
-在标准无偏 dueling bandits 中，UCB 类方法依赖置信区间逐步排除次优 arms，从而获得次线性 regret。当前项目的偏置环境比标准设定更难，因为观测概率 `Q_ij(t)` 不一定等于真实偏好 `P_ij`，并且从众偏置会随历史反馈变化。因此这里的 DBS-UCB 理论基础不是完整的无偏 regret bound，而是以下组合：
+## 3. 算法设计
 
-1. UCB 置信半径提供对 pairwise Bernoulli feedback 的高概率探索依据。
-2. Condorcet winner 假设提供明确的最优 arm 目标。
-3. Strong regret 提供偏离最优 arm 的损失度量。
-4. 衰减偏置惩罚提供 `O(sqrt(T))` 的次线性影响，避免早期偏置信号长期主导。
-5. Monte Carlo 实验与 paired permutation test 用于验证在合成偏置机制下的经验鲁棒性。
+三个算法复杂度递增，分别对应"无优化"、"优化探索"和"显式去偏"三个层次。
 
-### 为什么偏置不能只当作随机噪声
+### 3.1 RRE：轮询经验评分（Round-Robin Empirical）
 
-普通随机噪声通常满足均值为零，随着样本增加会被平均掉。但本项目中的偏置具有结构性：
+**定位**：最简单基线，代表大多数平台的隐性行为。
 
-- 位置偏置会稳定偏向展示顺序靠前的 arm。
-- 从众偏置会形成 popularity feedback loop。
-- 选择性反馈会在真实差距很小时放大外部信号。
+**选对策略**：按固定顺序轮流遍历所有电影对，确保每对获得相同比较次数。
 
-这类偏置可能使经验均值收敛到错误的观测概率 `Q_ij`，而不是真实偏好 `P_ij`。因此 DBS-UCB 的设计目标不是简单增加探索，而是在探索过程中显式削弱疑似偏置带来的早期优势。
+**偏好估计**：原始投票份额的经验均值，不做任何修正。
 
-### 参考理论来源
+**输出评分**：
+```
+R_i = 1 + 9 · mean_j P_hat[i,j]
+```
 
-本项目的理论背景主要来自：
+RRE 的问题：均匀探索效率较低；不修正任何偏置，评分结果直接受三类偏置污染。
 
-- K-armed dueling bandits：将学习反馈从标量 reward 扩展为 pairwise comparison。
-- Relative UCB：用 pairwise upper confidence bound 寻找可能的 Condorcet winner。
-- Hoeffding concentration：为 Bernoulli 反馈的经验均值置信半径提供依据。
-- Human evaluation calibration：将人类评价中的噪声和偏置作为需要建模的信号，而不是简单丢弃。
-- Paired permutation test：用于比较同一批随机实验下不同算法的最终 regret 差异。
+---
 
-## 输出文件
+### 3.2 UCB-R：基于置信上界的评分（UCB-based Rating）
 
-运行实验后会生成或覆盖以下文件：
+**定位**：智能探索基线，分离"聪明探索"与"去偏"各自的贡献。
+
+**核心思路**：最小化所有电影评分的总均方误差。对于电影 i，评分方差为：
+```
+Var(R_i) = (9/(K-1))^2 · sum_{j≠i} Var(P_hat[i,j])
+```
+最小化 sum_i Var(R_i) 等价于优先比较使 `Var(P_hat[i,j])` 最大的电影对。
+
+**选对优先级**：
+```
+priority(i,j) = P_hat[i,j]·(1-P_hat[i,j]) / N_ij  +  α·log(t) / N_ij
+```
+- 第一项：方差估计，偏好估计越接近 0.5 优先级越高
+- 第二项：UCB 探索奖励，比较次数越少优先级越高
+
+**偏好估计**：原始投票份额（无修正），以便与 SBCR 形成对照。
+
+---
+
+### 3.3 SBCR：对称去偏评分（Symmetric Bias-Corrected Rating）
+
+**定位**：本项目提出的完整方法，针对电影评分中三类偏置逐一设计修正。
+
+#### 第一步：展示方向对称化（消除展示顺序偏置）
+
+分方向记录投票：
+- `fwd_wins[i,j]`：电影 i 在前（j 在后）时，i 的加权投票份额
+- `fwd_counts[i,j]`：以上配置的总权重
+
+对称化估计（两个方向都有记录时）：
+```
+P_sym[i,j] = 0.5 · (P_fwd[i,j] + (1 - P_rev[i,j]))
+```
+
+其中：
+- `P_fwd[i,j] ≈ P_ij + b_pos + Δ_peer`（i 在前时的投票率）
+- `1 - P_rev[i,j] ≈ P_ij - b_pos + Δ_peer`（j 在前时 i 的等效投票率）
+
+两式相加除 2，`b_pos` 精确消除：
+```
+P_sym[i,j] = P_ij + Δ_peer(i,j,t)         ← 展示顺序偏置完全消除
+```
+
+当某对只有单方向记录时，退化为该单向估计（有偏但好于 0.5）。
+
+#### 第二步：从众效应修正（超额流行度差距法）
+
+**关键洞察**：如果没有从众效应，电影 i 的累计胜率应等于当前偏好估计所预测的质量分数：
+```
+arm_share_i  ≈  mean_j P_sym[i,j]    （无从众效应时）
+```
+任何超出这一预测的部分即为从众效应带来的虚假膨胀：
+```
+residual_i   = arm_share_i - mean_j P_sym[i,j]   ≈ 从众效应对 i 的平均贡献
+B_peer[i,j]  = γ · (residual_i - residual_j)
+P_corr[i,j]  = P_sym[i,j] - support · B_peer[i,j]
+```
+
+其中 `support = N_ij / (N_ij + min_count)` 是样本支持度，避免稀疏对子被过度修正。
+
+**当 b_conf = 0 时**（无从众效应）：arm_share ≈ P_sym.mean(axis=1)，residual ≈ 0，B_peer ≈ 0。算法不会产生错误修正。
+
+#### 第三步（第四步对应选对策略）：不对称性奖励 + 方差 UCB
+
+选对优先级结合三项：
+```
+priority(i,j) = P_corr·(1-P_corr)/N + α·log(t)/N      # 方差-UCB（同 UCB-R 但用 P_corr）
+              + sym_bonus / N  （仅当该对只记录了一个方向）  # 激励双向对称覆盖
+              + 0.5·|B_peer[i,j]| / (N+1)                  # 从众估计不确定时多探索
+```
+
+不对称性奖励促使算法尽快完成每对电影的双向比较，最大化展示方向修正的效果。
+
+---
+
+## 4. 理论分析
+
+### 4.1 展示顺序偏置消除的精确性
+
+设展示顺序偏置为常数 `b_pos`：
+```
+E[P_fwd[i,j]]   = P_ij + b_pos + Δ_peer(i,j)
+E[1-P_rev[i,j]] = P_ij - b_pos + Δ_peer(i,j)
+E[P_sym[i,j]]   = P_ij + Δ_peer(i,j)           （b_pos 精确消除）
+```
+无论 b_pos 大小，只要正反两个方向各有足够样本，位置偏置均可精确消除。
+
+### 4.2 从众效应修正的一致性
+
+记 pop_i(T) 为最终累计好评率，则：
+```
+residual_i  = arm_share_i - expected_i
+            ≈ b_conf · mean_j tanh(3·(pop_i(T) - pop_j(T)))
+```
+
+因此：
+```
+B_peer[i,j] = γ · (residual_i - residual_j)
+            ≈ γ · b_conf · (mean peer boost on i - mean peer boost on j)
+```
+
+这是对配对从众效应的合理估计。当样本量 N → ∞ 时，B_peer → 真实从众偏置。
+
+### 4.3 样本复杂度讨论
+
+SBCR 的修正依赖双向对称观测，因此在初期（轮数较少）时方差高于不做修正的基线。这是**偏置修正的固有代价**：
+
+- 早期（样本稀疏）：P_sym 的方差略高于 P_hat（每个方向的样本更少）
+- 中后期（样本充足）：P_sym 精确消除位置偏置，P_corr 进一步减小从众效应带来的系统误差
+- 不对称性奖励加速双向覆盖，缩短收敛时间
+
+---
+
+## 5. 偏置场景
+
+| 场景名 | 启用偏置 | 现实对应 |
+|---|---|---|
+| `attention_bias` | 展示顺序偏置（强）| 搜索结果靠前的电影获得更多点击 |
+| `echo_chamber` | 从众效应偏置（强）| 高评分电影持续获得更高分（"好评雪球"）|
+| `polarisation` | 极化反馈偏置（强）| 质量接近的电影被极端意见用户主导 |
+| `realistic` | 三者同时叠加（中等）| 真实平台的综合偏置环境 |
+
+---
+
+## 6. 三维对比评价体系
+
+### 6.1 准确性（Accuracy）
+
+| 指标 | 含义 |
+|---|---|
+| Rating MAE | 估计评分与真实评分的平均绝对误差（1–10 分制）|
+| Rank Spearman ρ | 估计排名与真实排名的相关系数（越近 1 越好）|
+| Top-1 accuracy | 最终识别出的最优电影是否与真实最优一致 |
+| Mean rank error | 所有电影名次偏差的均值 |
+
+### 6.2 效率（Efficiency）
+
+| 指标 | 含义 |
+|---|---|
+| Cumulative regret | 算法偏离最优电影对的累计损失 |
+| Final regret | 实验结束时的累计 regret |
+| AUC regret | 累计 regret 曲线下面积，衡量全程整体效率 |
+
+### 6.3 鲁棒性（Robustness）
+
+| 指标 | 含义 |
+|---|---|
+| Relative final regret | 算法 final regret 相对同场景最佳算法的比例 |
+| 跨场景方差 | 指标在四个偏置场景间的标准差（越小越稳定）|
+| Decision flip rate | 偏置后观测概率跨越 0.5 边界的比例 |
+
+---
+
+## 7. 从偏好矩阵到星级评分
+
+最终输出每部电影在 1–10 分制下的修正评分：
+```
+q_i      = mean_{j≠i} P_corr[i,j]    （平均胜率，衡量相对质量）
+R_i      = 1 + 9 · q_i               （映射到 1–10 分制）
+```
+
+这是**相对评分**：反映该电影在当前候选集合中相对其他电影的质量。对于足够大的候选集，相对评分会逼近绝对质量排名。
+
+---
+
+## 8. 快速开始
+
+```bash
+pip install -r requirements.txt
+
+# 快速调试（1000 轮，8 次 Monte Carlo）
+python -m src.main --quick
+
+# 完整实验（5000 轮，24 次 Monte Carlo）
+python -m src.main
+
+# 自定义规模
+python -m src.main --horizon 8000 --runs 30
+```
+
+---
+
+## 9. 输出文件
 
 | 路径 | 内容 |
 |---|---|
-| `results/figures/regret_position_bias.png` | 位置偏置场景累计遗憾曲线 |
-| `results/figures/regret_conformity_bias.png` | 从众偏置场景累计遗憾曲线 |
-| `results/figures/regret_selective_feedback.png` | 选择性反馈场景累计遗憾曲线 |
-| `results/figures/regret_mixed_bias.png` | 混合偏置场景累计遗憾曲线 |
-| `results/figures/robustness_comparison.png` | 各算法相对最终遗憾柱状图 |
-| `results/raw_data/regret_summary.csv` | 每个场景、算法、轮次的均值和标准差 |
-| `results/raw_data/robustness_table.csv` | 相对最终遗憾表 |
+| `results/figures/regret_*.png` | 各偏置场景下的累计遗憾曲线 |
+| `results/figures/movie_ratings_*.png` | 各场景下修正评分 vs 真实质量对比图 |
+| `results/figures/robustness_comparison.png` | 各算法相对最终遗憾对比图 |
+| `results/figures/bias_diagnostics_*.png` | 每个场景下的偏置诊断指标 |
+| `results/raw_data/movie_ratings.csv` | 每部电影在每个场景下的修正评分（1–10）|
+| `results/raw_data/bias_effect_summary.csv` | Rating MAE、Spearman ρ、Flip Rate 汇总表 |
 | `results/raw_data/statistical_report.json` | 最终遗憾、AUC 和显著性检验结果 |
-| `results/raw_data/statistical_summary.md` | 显著性检验 Markdown 汇总 |
-| `results/raw_data/robustness_table.tex` | 可插入论文的 LaTeX 表格 |
-
-## 指标说明
-
-- Instantaneous regret：相对于 best arm 的单轮 strong regret。
-- Cumulative regret：单轮 regret 的累计和。
-- Final regret：实验结束时的累计 regret。
-- AUC regret：累计 regret 曲线下面积，用于衡量整个过程的整体损失。
-- Relative final regret：算法最终 regret 相对于同场景最佳算法的比例，越低越好。
-- Paired permutation test：比较 DBS-UCB 与 baseline 的 paired final regret 差异。
-
-## 复现实验
-
-默认配置已固定随机种子。复现实验时请确保：
-
-1. 使用相同 Python 版本和依赖版本。
-2. 不修改 `config/config.py` 中的随机种子、场景参数和算法参数。
-3. 从项目根目录运行 `python -m src.main`。
-4. 检查 `results/raw_data/statistical_report.json` 和 `results/figures/` 输出。
-
-推荐记录环境：
-
-```bash
-python --version
-pip freeze
-```
-
-## 扩展方式
-
-新增算法：
-
-1. 在 `src/algorithms/` 中新增算法类。
-2. 继承 `BaseDuelingBanditAlgorithm`。
-3. 实现 `select_pair()`。
-4. 在 `src/main.py` 的 `algo_registry` 注册算法。
-5. 在 `config/config.py` 的 `algorithms` 中加入算法名称。
-
-新增偏置场景：
-
-1. 在 `config/config.py` 的 `scenarios` 列表中增加配置。
-2. 如需新偏置机制，扩展 `BiasedDuelingEnvironment.observed_probability()`。
-3. 重新运行实验并检查 `results/figures/` 与 `results/raw_data/`。
-
-接入真实数据：
-
-- `src/data/mt_bench_loader.py` 目前是 MT-Bench 集成预留入口。
-- 可以将真实 pairwise judgments 转换为偏好矩阵或 replay environment 后接入主实验流程。
-
-## 常见问题
-
-### 运行 `python -m src.main` 提示找不到 `src`
-
-请确认当前目录是项目根目录，而不是 `src/` 目录。
-
-### Windows 上 `python` 无法启动
-
-可能是 PATH 指向 Microsoft Store 占位程序。建议激活 `.venv`，或直接运行：
-
-```powershell
-.\.venv\Scripts\python.exe -m src.main --quick
-```
-
-### Matplotlib 在无图形界面环境失败
-
-项目绘图模块使用非交互式 `Agg` 后端，适合服务器、CI 和无 GUI 环境运行。
-
-### 输出结果被覆盖
-
-每次运行会覆盖 `results/figures/` 和 `results/raw_data/` 中同名文件。需要保留历史结果时，可在运行前复制或重命名 `results/` 下的输出目录。
-
-## 已知限制
-
-- 当前实验主要基于合成偏好矩阵，真实 LLM judge 或 MT-Bench judgment 尚未完整接入。
-- DBS-UCB 的偏置估计是启发式设计，仍可继续做理论推导和消融实验。
-- 目前没有独立测试套件，建议后续补充 unit tests 和 small regression tests。
-- 默认结果目录为固定路径，多组实验管理可以继续扩展为带 timestamp 或 run id 的输出结构。

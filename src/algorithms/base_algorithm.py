@@ -19,11 +19,26 @@ class BaseDuelingBanditAlgorithm(ABC):
     def select_pair(self) -> Tuple[int, int]:
         """Choose a pair of arms for a duel."""
 
-    def update(self, i: int, j: int, winner: int) -> None:
+    def update(
+        self,
+        i: int,
+        j: int,
+        winner: int,
+        vote_share_i: float | None = None,
+        audience_size: int | None = None,
+    ) -> None:
         loser = j if winner == i else i
-        self.wins[winner, loser] += 1.0
-        self.comparisons[i, j] += 1.0
-        self.comparisons[j, i] += 1.0
+        weight = 1.0 if audience_size is None else max(1.0, float(audience_size))
+
+        if vote_share_i is None:
+            self.wins[winner, loser] += weight
+        else:
+            share_i = float(np.clip(vote_share_i, 0.0, 1.0))
+            self.wins[i, j] += weight * share_i
+            self.wins[j, i] += weight * (1.0 - share_i)
+
+        self.comparisons[i, j] += weight
+        self.comparisons[j, i] += weight
         self.t += 1
 
     def estimated_preferences(self) -> np.ndarray:
