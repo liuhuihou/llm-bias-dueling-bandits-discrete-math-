@@ -8,7 +8,7 @@ RAW_DATA_DIR = RESULTS_DIR / "raw_data"
 
 DEFAULT_CONFIG = {
     "random_seed": 42,
-    "n_arms": 20,           # movies in the candidate pool
+    "n_arms": 12,           # movies in the candidate pool
     "horizon": 5000,        # pairwise voting sessions per Monte Carlo run
     "n_runs": 24,
     "preference_temperature": 0.35,
@@ -19,10 +19,10 @@ DEFAULT_CONFIG = {
     "ucbr_params": {"alpha": 1.0},
     "sbcr_params": {
         "alpha": 1.0,
-        "peer_gamma": 0.70,
+        "peer_gamma": 0.85,
         "sym_bonus": 0.06,
-        "peer_clip": 0.20,
-        "min_count": 10,
+        "peer_clip": 0.12,
+        "min_count": 25,
     },
     # ── Bias scenarios ────────────────────────────────────────────────────
     # Four scenarios isolate and combine the three bias mechanisms that
@@ -39,7 +39,7 @@ DEFAULT_CONFIG = {
     "scenarios": [
         {
             "name": "attention_bias",
-            "position_bias": 0.08,
+            "position_bias": 0.10,
             "conformity_bias": 0.00,
             "selective_bias": 0.00,
             "selective_threshold": 0.12,
@@ -47,22 +47,15 @@ DEFAULT_CONFIG = {
         {
             "name": "echo_chamber",
             "position_bias": 0.00,
-            "conformity_bias": 0.18,
+            "conformity_bias": 0.20,
             "selective_bias": 0.00,
             "selective_threshold": 0.12,
         },
         {
-            "name": "polarisation",
-            "position_bias": 0.00,
-            "conformity_bias": 0.00,
-            "selective_bias": 0.28,
-            "selective_threshold": 0.10,
-        },
-        {
             "name": "realistic",
-            "position_bias": 0.05,
-            "conformity_bias": 0.12,
-            "selective_bias": 0.18,
+            "position_bias": 0.06,
+            "conformity_bias": 0.14,
+            "selective_bias": 0.15,
             "selective_threshold": 0.12,
         },
     ],

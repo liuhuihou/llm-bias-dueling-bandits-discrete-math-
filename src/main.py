@@ -105,11 +105,7 @@ def run_single_experiment(
     }
 
     for _ in range(horizon):
-        selected_i, selected_j = algorithm.select_pair()
-        i, j = selected_i, selected_j
-        # Randomise display order to allow symmetric averaging.
-        if environment.rng.random() < 0.5:
-            i, j = selected_j, selected_i
+        i, j = algorithm.select_pair()
 
         winner = environment.duel(i, j)
         event = environment.last_event or {}

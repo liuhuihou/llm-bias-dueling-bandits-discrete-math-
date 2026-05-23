@@ -2,7 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(.venv/Scripts/python.exe -m src.main --quick)",
-      "Bash(python -m src.main)"
+      "Bash(python -m src.main)",
+      "Bash(where pdflatex *)",
+      "Bash(pdflatex --version)",
+      "Bash(where bibtex *)",
+      "Bash(pdflatex -interaction=nonstopmode project_report.tex)",
+      "Bash(bibtex project_report)",
+      "Bash(python -c ' *)"
     ]
   }
 }
